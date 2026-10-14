@@ -2376,3 +2376,22 @@ describe("cmux.ts", () => {
     });
   });
 });
+
+describe("session replacement", () => {
+  it("leaves a live poll abort signal after session_shutdown", () => {
+    const pollAbortKey = Symbol.for("pi-subagents/poll-abort-controller");
+    const shutdownHandlers: Function[] = [];
+    const fakePi = new Proxy({}, {
+      get: (_target, property) => property === "on"
+        ? (event: string, handler: Function) => { if (event === "session_shutdown") shutdownHandlers.push(handler); }
+        : () => {},
+    }) as any;
+    subagentsModule.default(fakePi);
+    const previousController = (globalThis as any)[pollAbortKey] as AbortController;
+
+    for (const handler of shutdownHandlers) handler({ type: "session_shutdown", reason: "new" }, {});
+
+    assert.equal(previousController.signal.aborted, true);
+    assert.equal(((globalThis as any)[pollAbortKey] as AbortController).signal.aborted, false);
+  });
+});
