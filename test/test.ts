@@ -944,11 +944,37 @@ describe("subagent discovery", () => {
       testApi.resolveEffectiveInteractive({ name: "A", task: "T" }, {}),
       true,
     );
-    // Bare spawn with no agent defs (e.g. /iterate fork) is interactive by default.
     assert.equal(
       testApi.resolveEffectiveInteractive({ name: "A", task: "T" }, null),
+      false,
+    );
+  });
+
+  it("auto-exits bare spawns without relying on a subagent_done tool call", () => {
+    for (const params of [
+      { name: "A", task: "T" },
+      { name: "A", task: "T", fork: true },
+      { name: "A", task: "T", interactive: false },
+    ]) {
+      assert.equal(testApi.resolveEffectiveAutoExit(params, null), true);
+    }
+    assert.equal(
+      testApi.resolveEffectiveAutoExit({ name: "A", task: "T", interactive: true }, null),
+      false,
+    );
+    assert.equal(
+      testApi.resolveEffectiveInteractive({ name: "A", task: "T", interactive: true }, null),
       true,
     );
+  });
+
+  it("preserves named agents' auto-exit policy independently of status notifications", () => {
+    for (const interactive of [undefined, false, true]) {
+      const params = { name: "A", task: "T", interactive };
+      assert.equal(testApi.resolveEffectiveAutoExit(params, {}), false);
+      assert.equal(testApi.resolveEffectiveAutoExit(params, { autoExit: false }), false);
+      assert.equal(testApi.resolveEffectiveAutoExit(params, { autoExit: true }), true);
+    }
   });
 
   it("resolveEffectiveInteractive honors explicit frontmatter over the auto-exit default", () => {
@@ -1352,6 +1378,7 @@ describe("commands", () => {
     assert.ok(iterate, "expected /iterate to be registered");
 
     iterate.handler("Fix the bug", {});
+    assert.match(sentUserMessages[0], /interactive: true/);
 
     assert.equal(sentUserMessages.length, 1);
     assert.match(sentUserMessages[0], /fork: true/);
@@ -2374,5 +2401,24 @@ describe("cmux.ts", () => {
       const result = isWezTermAvailable();
       assert.equal(typeof result, "boolean");
     });
+  });
+});
+
+describe("session replacement", () => {
+  it("leaves a live poll abort signal after session_shutdown", () => {
+    const pollAbortKey = Symbol.for("pi-subagents/poll-abort-controller");
+    const shutdownHandlers: Function[] = [];
+    const fakePi = new Proxy({}, {
+      get: (_target, property) => property === "on"
+        ? (event: string, handler: Function) => { if (event === "session_shutdown") shutdownHandlers.push(handler); }
+        : () => {},
+    }) as any;
+    subagentsModule.default(fakePi);
+    const previousController = (globalThis as any)[pollAbortKey] as AbortController;
+
+    for (const handler of shutdownHandlers) handler({ type: "session_shutdown", reason: "new" }, {});
+
+    assert.equal(previousController.signal.aborted, true);
+    assert.equal(((globalThis as any)[pollAbortKey] as AbortController).signal.aborted, false);
   });
 });

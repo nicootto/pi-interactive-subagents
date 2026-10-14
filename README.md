@@ -31,6 +31,7 @@ pi install git:github.com/HazAT/pi-interactive-subagents
 
 Supported multiplexers:
 
+- Herdr: https://herdr.dev
 - [cmux](https://github.com/manaflow-ai/cmux)
 - [tmux](https://github.com/tmux/tmux)
 - [zellij](https://zellij.dev)
@@ -48,7 +49,25 @@ zellij --session pi   # then run: pi
 # just run pi inside WezTerm — no wrapper needed
 ```
 
-Optional: set `PI_SUBAGENT_MUX=cmux|tmux|zellij|wezterm` to force a specific backend.
+Optional: set `PI_SUBAGENT_MUX=cmux|tmux|zellij|wezterm|herdr` to force a specific backend.
+
+### Herdr
+
+Run `pi` inside a Herdr pane. The extension detects `HERDR_ENV=1` and `HERDR_PANE_ID` before other multiplexers.
+Use `PI_SUBAGENT_MUX=herdr` to force Herdr; the extension refuses Herdr control outside a managed pane.
+
+Each subagent opens in a right-hand split beside the caller's pane, in the same tab and workspace, without focus.
+Pass `workspace` and `tab` labels to `subagent` or `subagent_resume` to place it elsewhere: missing workspaces and tabs are created without focus, and an existing tab gets a right split.
+Commands and Escape target explicit pane IDs.
+Explicit background splits support `right` and `down`.
+Subagent panes close when the agent session exits, and results return to the parent.
+Use `subagent_resume` to continue a saved session in a new pane.
+
+From this checkout, install the local Herdr build:
+
+```bash
+pi install .
+```
 
 If your shell startup is slow and subagent commands sometimes get dropped before the prompt is ready, set `PI_SUBAGENT_SHELL_READY_DELAY_MS` to a higher value (defaults to `500`):
 
@@ -56,7 +75,7 @@ If your shell startup is slow and subagent commands sometimes get dropped before
 export PI_SUBAGENT_SHELL_READY_DELAY_MS=2500
 ```
 
-Subagent panes are created without stealing keyboard focus (cmux, tmux). Launch commands target child surfaces by explicit ID, so focus and command delivery are independent. Note: the `interactive` option controls parent status notifications, not terminal focus.
+Subagent panes are created without stealing keyboard focus (cmux, tmux). Launch commands target child surfaces by explicit ID, so focus and command delivery are independent. The `interactive` option controls parent status notifications, not terminal focus. Without an agent definition, spawns auto-exit by default; set `interactive: true` to keep the child open.
 
 ## What's Included
 
@@ -81,11 +100,11 @@ Subagent panes are created without stealing keyboard focus (cmux, tmux). Launch 
 
 | Agent             | Model                  | Role                                                                                     |
 | ----------------- | ---------------------- | ---------------------------------------------------------------------------------------- |
-| **planner**       | Opus (medium thinking) | Brainstorming — clarifies requirements, explores approaches, writes plans, creates todos |
-| **scout**         | Haiku                  | Fast codebase reconnaissance — maps files, patterns, conventions                         |
-| **worker**        | Sonnet                 | Implements tasks from todos — writes code, runs tests, makes polished commits            |
+| **planner**       | GPT-6 Astra (medium thinking) | Brainstorming — clarifies requirements, explores approaches, writes plans, creates todos |
+| **scout**         | GPT-5.6 Luna (max thinking) | Fast codebase reconnaissance — maps files, patterns, conventions                         |
+| **worker**        | GPT-5.6 Sol (xhigh thinking) | Implements tasks from todos — writes code, runs tests, makes polished commits            |
 | **reviewer**      | Opus (medium thinking) | Reviews code for bugs, security issues, correctness                                      |
-| **visual-tester** | Sonnet                 | Visual QA via Chrome CDP — screenshots, responsive testing, interaction testing          |
+| **visual-tester** | GPT-5.6 Sol (xhigh thinking) | Visual QA via Chrome CDP — screenshots, responsive testing, interaction testing          |
 
 Agent discovery follows priority: **project-local** (`.pi/agents/`) > **global** (`~/.pi/agent/agents/`) > **package-bundled**. Override any bundled agent by placing your own version in the higher-priority location.
 
@@ -171,7 +190,7 @@ subagent({ name: "Designer", agent: "game-designer", cwd: "agents/game-designer"
 | `task`                 | string  | required       | Task prompt for the sub-agent                                                                     |
 | `agent`                | string  | —              | Load defaults from agent definition                                                               |
 | `fork`                 | boolean | `false`        | Force the full-context fork mode for this spawn, overriding any agent `session-mode` frontmatter  |
-| `interactive`          | boolean | derived        | Mark this spawn as interactive (don't wake the parent on stall/recovery). Defaults to the agent's `interactive` frontmatter, otherwise the inverse of `auto-exit`. |
+| `interactive`          | boolean | derived        | Suppress stall/recovery notifications. Without an agent definition, defaults to `false` and the child auto-exits; `true` keeps it open. Named agents retain their `auto-exit` policy and derive notifications from `interactive` frontmatter or the inverse of `auto-exit`. |
 | `model`                | string  | —              | Override agent's default model                                                                    |
 | `systemPrompt`         | string  | —              | Append to system prompt                                                                           |
 | `skills`               | string  | —              | Comma-separated skill names                                                                       |
@@ -296,7 +315,7 @@ You are a specialized agent that does X...
 | `name`        | string  | Agent name (used in `agent: "my-agent"`)                                                                                                                                                                                                                                    |
 | `description` | string  | Shown in `subagents_list` output                                                                                                                                                                                                                                            |
 | `model`       | string  | Default model (e.g. `anthropic/claude-sonnet-4-6`)                                                                                                                                                                                                                          |
-| `thinking`    | string  | Thinking level: `minimal`, `medium`, `high`                                                                                                                                                                                                                                 |
+| `thinking`    | string  | Thinking level: `minimal`, `medium`, `high`. Default: `medium`                                                                                                                                                                                                              |
 | `tools`       | string  | Comma-separated **native pi tools only**: `read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`                                                                                                                                                                             |
 | `skills`      | string  | Comma-separated skill names to auto-load                                                                                                                                                                                                                                    |
 | `session-mode` | string | Default child-session mode: `standalone`, `lineage-only`, or `fork` |
@@ -356,7 +375,7 @@ auto-exit: true
 
 Controls whether status transitions (`stalled`, `recovered`) wake the parent session with a steer message.
 
-**Default:** the inverse of `auto-exit`. Autonomous agents (`auto-exit: true`) are non-interactive and ping the parent on stall/recovery; agents without `auto-exit` are interactive and stay quiet. Bare spawns with no agent defs (e.g. `/iterate` with `fork: true`) are treated as interactive.
+**Default:** named agents use the inverse of `auto-exit`. Autonomous agents (`auto-exit: true`) are non-interactive and ping the parent on stall/recovery; agents without `auto-exit` are interactive and stay quiet. Bare spawns without an agent definition auto-exit and are non-interactive by default, including forks. Set `interactive: true` to keep a bare child open. `/iterate` sets that option explicitly. For named agents, `interactive` changes notifications only; the agent's `auto-exit` policy remains unchanged.
 
 **Why it exists:** Interactive agents can run for minutes or hours while the user thinks, types, and reads in the subagent's pane. Child snapshots still update the widget, but stalled/recovered supervision messages rarely need to wake the parent for user-driven sessions. Skipping the steer keeps the parent quiet until the child actually finishes.
 
@@ -468,6 +487,7 @@ Every sub-agent session displays a compact tools widget showing available and de
 
 - [pi](https://github.com/badlogic/pi-mono) — the coding agent
 - One supported multiplexer:
+  - Herdr: https://herdr.dev
   - [cmux](https://github.com/manaflow-ai/cmux)
   - [tmux](https://github.com/tmux/tmux)
   - [zellij](https://zellij.dev)
@@ -486,7 +506,7 @@ zellij --session pi   # then run: pi
 Optional backend override:
 
 ```bash
-export PI_SUBAGENT_MUX=cmux   # or tmux, zellij, wezterm
+export PI_SUBAGENT_MUX=cmux   # or tmux, zellij, wezterm, herdr
 ```
 
 ---
