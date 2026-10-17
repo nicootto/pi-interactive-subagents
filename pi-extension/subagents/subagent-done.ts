@@ -6,7 +6,7 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { Box, Text } from "@mariozechner/pi-tui";
 import { Type } from "@sinclair/typebox";
-import { writeFileSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { createSubagentActivityRecorder } from "./activity.ts";
 
 export function shouldMarkUserTookOver(agentStarted: boolean): boolean {
@@ -173,6 +173,21 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("agent_end", (event, ctx) => {
     const messages = (event as any).messages as any[] | undefined;
+    const sessionFile = process.env.PI_SUBAGENT_SESSION;
+
+    // The parent's subagent_stop writes this marker before sending Escape.
+    // It ends the session whatever autoExit is and however the turn ended.
+    if (sessionFile && existsSync(`${sessionFile}.stop`)) {
+      try {
+        writeFileSync(`${sessionFile}.exit`, JSON.stringify({ type: "stopped" }));
+      } catch {
+        // Best effort — the parent still reports a stop-requested child as stopped.
+      }
+      recorder.agentEndDone();
+      ctx.shutdown();
+      return;
+    }
+
     const shouldExit = autoExit && shouldAutoExitOnAgentEnd(userTookOver, messages);
 
     if (shouldExit) {
@@ -182,7 +197,6 @@ export default function (pi: ExtensionAPI) {
       // Without this the parent would only see exit code 0 and a stale
       // assistant message, mistaking the crash for a successful completion.
       const errorInfo = findLatestAssistantError(messages);
-      const sessionFile = process.env.PI_SUBAGENT_SESSION;
       if (errorInfo && sessionFile) {
         try {
           writeFileSync(

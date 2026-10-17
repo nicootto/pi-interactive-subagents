@@ -49,7 +49,7 @@ import {
   getSubagentActivityFile,
   readSubagentActivityFile,
 } from "../pi-extension/subagents/activity.ts";
-import {
+import subagentDoneExtension, {
   shouldMarkUserTookOver,
   shouldAutoExitOnAgentEnd,
   findLatestAssistantError,
@@ -1275,6 +1275,41 @@ describe("subagent-done.ts", () => {
       // failure detail; staying open would just strand the worker.
       const messages = [{ role: "assistant", stopReason: "error", errorMessage: "529 overloaded" }];
       assert.equal(shouldAutoExitOnAgentEnd(false, messages), true);
+    });
+  });
+
+  describe("stop marker", () => {
+    it("shuts down on agent_end after an aborted turn even when autoExit is off", () => {
+      withTempDir((dir) => {
+        const sessionFile = join(dir, "child.jsonl");
+        writeFileSync(`${sessionFile}.stop`, "");
+        const previousSession = process.env.PI_SUBAGENT_SESSION;
+        const previousAutoExit = process.env.PI_SUBAGENT_AUTO_EXIT;
+        const previousActivityFile = process.env.PI_SUBAGENT_ACTIVITY_FILE;
+        process.env.PI_SUBAGENT_SESSION = sessionFile;
+        process.env.PI_SUBAGENT_AUTO_EXIT = "0";
+        delete process.env.PI_SUBAGENT_ACTIVITY_FILE;
+
+        try {
+          const handlers = new Map<string, Function>();
+          const { api } = createMockExtensionApi();
+          api.on = (event: string, handler: Function) => handlers.set(event, handler);
+          subagentDoneExtension(api);
+
+          let shutdowns = 0;
+          handlers.get("agent_end")!(
+            { messages: [{ role: "assistant", stopReason: "aborted" }] },
+            { shutdown: () => shutdowns++ },
+          );
+
+          assert.equal(shutdowns, 1);
+          assert.deepEqual(JSON.parse(readFileSync(`${sessionFile}.exit`, "utf8")), { type: "stopped" });
+        } finally {
+          restoreEnvVar("PI_SUBAGENT_SESSION", previousSession);
+          restoreEnvVar("PI_SUBAGENT_AUTO_EXIT", previousAutoExit);
+          restoreEnvVar("PI_SUBAGENT_ACTIVITY_FILE", previousActivityFile);
+        }
+      });
     });
   });
 
