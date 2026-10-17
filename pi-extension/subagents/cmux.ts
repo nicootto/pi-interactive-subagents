@@ -1263,7 +1263,7 @@ export function closeSurface(surface: string): void {
 
 export interface PollResult {
   /** How the subagent exited */
-  reason: "done" | "ping" | "sentinel" | "error";
+  reason: "done" | "ping" | "sentinel" | "error" | "stopped";
   /** Shell exit code (from sentinel). 0 for file-based exits. */
   exitCode: number;
   /** Ping data if reason is "ping" */
@@ -1274,7 +1274,7 @@ export interface PollResult {
 
 /**
  * Interpret an `.exit` sidecar payload (written by subagent_done / caller_ping /
- * the error path in subagent-done.ts). Centralized so both the fast and slow
+ * the error and stop paths in subagent-done.ts). Centralized so both the fast and slow
  * paths in pollForExit decode the payload the same way.
  */
 function interpretExitSidecar(data: any): PollResult {
@@ -1292,6 +1292,9 @@ function interpretExitSidecar(data: any): PollResult {
         : "Subagent exited with stopReason=error (no errorMessage in sidecar).";
     return { reason: "error", exitCode: 1, errorMessage };
   }
+  if (data?.type === "stopped") {
+    return { reason: "stopped", exitCode: 0 };
+  }
   return { reason: "done", exitCode: 0 };
 }
 
@@ -1300,7 +1303,8 @@ export const __pollForExitTest__ = { interpretExitSidecar };
 /**
  * Poll until the subagent exits. Checks for a `.exit` sidecar file first
  * (written by subagent_done / caller_ping), falling back to the terminal
- * sentinel for crash detection.
+ * sentinel for crash detection. Returns "stopped" once `isClosedByStop` reports
+ * that subagent_stop closed the pane, because a closed pane prints no sentinel.
  */
 export async function pollForExit(
   surface: string,
@@ -1309,6 +1313,7 @@ export async function pollForExit(
     interval: number;
     sessionFile?: string;
     sentinelFile?: string;
+    isClosedByStop?: () => boolean;
     onTick?: (elapsed: number) => void;
   },
 ): Promise<PollResult> {
@@ -1329,6 +1334,10 @@ export async function pollForExit(
           return interpretExitSidecar(data);
         }
       } catch {}
+    }
+
+    if (options.isClosedByStop?.()) {
+      return { reason: "stopped", exitCode: 0 };
     }
 
     // Check Claude sentinel file (written by plugin Stop hook)

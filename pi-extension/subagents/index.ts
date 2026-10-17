@@ -12,6 +12,7 @@ import {
   mkdirSync,
   copyFileSync,
   unlinkSync,
+  rmSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import {
@@ -176,6 +177,7 @@ interface ListedAgentDefinition extends AgentDefinition {
 const SPAWNING_TOOLS = new Set([
   "subagent",
   "subagent_interrupt",
+  "subagent_stop",
   "subagents_list",
   "subagent_resume",
 ]);
@@ -443,13 +445,17 @@ function formatWidgetRightLabel(snapshot: StatusSnapshot): string {
 function resolveResultPresentation(
   result: Pick<
     SubagentResult,
-    "exitCode" | "elapsed" | "summary" | "sessionFile" | "errorMessage"
+    "exitCode" | "elapsed" | "summary" | "sessionFile" | "errorMessage" | "stopped"
   >,
   name: string,
 ): string {
   const sessionRef = result.sessionFile
     ? `\n\nSession: ${result.sessionFile}\nResume: pi --session ${result.sessionFile}`
     : "";
+
+  if (result.stopped) {
+    return `Sub-agent "${name}" stopped (${formatElapsed(result.elapsed)}).\n\n${result.summary}${sessionRef}`;
+  }
 
   if (result.errorMessage) {
     // Auto-retry exhausted or other agent-loop error. The subagent did not
@@ -485,6 +491,8 @@ interface SubagentResult {
   /** Provider/agent error message when auto-retry exhausted (overload, rate limit, etc.). */
   errorMessage?: string;
   ping?: { name: string; message: string };
+  /** True when subagent_stop ended the subagent. */
+  stopped?: boolean;
 }
 
 /**
@@ -517,7 +525,14 @@ interface RunningSubagent {
    * subagent's pane (e.g. planner).
    */
   interactive: boolean;
+  /** Set by subagent_stop. The watcher then reports the subagent as stopped. */
+  stopRequested?: boolean;
+  /** Set when subagent_stop closed the pane because the child did not exit in time. */
+  closedByStop?: boolean;
 }
+
+/** How long subagent_stop waits for the child to exit before it closes the pane. */
+const STOP_GRACE_MS = 5_000;
 
 /** All currently running subagents, keyed by id. */
 const runningSubagents = new Map<string, RunningSubagent>();
@@ -838,6 +853,58 @@ function handleSubagentInterrupt(
   };
 }
 
+function handleSubagentStop(
+  params: { id?: string; name?: string },
+  options: {
+    sendEscapeKey?: (surface: string) => void;
+    closePane?: (surface: string) => void;
+    graceMs?: number;
+  } = {},
+) {
+  const { sendEscapeKey = sendEscape, closePane = closeSurface, graceMs = STOP_GRACE_MS } = options;
+  const resolved = resolveInterruptTarget(params);
+  if ("error" in resolved) {
+    return {
+      content: [{ type: "text" as const, text: resolved.error }],
+      details: { error: resolved.error },
+    };
+  }
+
+  const running = resolved.running;
+  const acknowledgement = {
+    content: [{
+      type: "text" as const,
+      text:
+        `Stop requested for subagent "${running.name}". ` +
+        `Its pane closes within ${Math.round(graceMs / 1000)}s and the harness delivers a "stopped" subagent_result.`,
+    }],
+    details: { id: running.id, name: running.name, status: "stop_requested" },
+  };
+  if (running.stopRequested) return acknowledgement;
+  running.stopRequested = true;
+
+  if (running.cli !== "claude") {
+    // An idle child ignores Escape and a failed marker write leaves the child
+    // running; the grace-period close below covers both.
+    try {
+      writeFileSync(`${running.sessionFile}.stop`, "");
+    } catch {}
+    requestSubagentInterrupt(running, sendEscapeKey);
+  }
+
+  const graceTimer = setTimeout(() => {
+    if (runningSubagents.get(running.id) !== running) return;
+    running.closedByStop = true;
+    try {
+      closePane(running.surface);
+    } catch {}
+  }, graceMs);
+  graceTimer.unref?.();
+
+  updateWidget();
+  return acknowledgement;
+}
+
 function startStatusRefresh(pi: ExtensionAPI) {
   if (!statusConfig.enabled || statusInterval) return;
 
@@ -914,6 +981,8 @@ export const __test__ = {
   resolveInterruptTarget,
   requestSubagentInterrupt,
   handleSubagentInterrupt,
+  handleSubagentStop,
+  watchSubagent,
   resolveResultPresentation,
   resolveResumeLaunchBehavior,
   runningSubagents,
@@ -1262,12 +1331,15 @@ async function watchSubagent(
       interval: 1000,
       sessionFile,
       sentinelFile: running.sentinelFile,
+      isClosedByStop: () => running.closedByStop === true,
       onTick() {
         observeRunningSubagent(running);
       },
     });
 
     const elapsed = Math.floor((Date.now() - startTime) / 1000);
+    const stopped = running.stopRequested === true || result.reason === "stopped";
+    const paneOpen = running.closedByStop !== true;
 
     if (running.cli === "claude") {
       // Claude Code result extraction
@@ -1279,14 +1351,16 @@ async function watchSubagent(
         } catch {}
       }
 
-      if (!summary) {
+      if (!summary && paneOpen) {
         summary = readScreen(surface, 200)
           .replace(/__SUBAGENT_DONE_\d+__/, "")
           .trimEnd();
       }
 
       if (!summary) {
-        summary = result.exitCode !== 0
+        summary = stopped
+          ? "Claude Code was stopped before it reported a result."
+          : result.exitCode !== 0
           ? `Claude Code exited with code ${result.exitCode}`
           : "Claude Code exited without output";
       }
@@ -1299,33 +1373,40 @@ async function watchSubagent(
         try { unlinkSync(running.sentinelFile + ".transcript"); } catch {}
       }
 
-      closeSurface(surface);
+      if (paneOpen) closeSurface(surface);
       runningSubagents.delete(running.id);
 
-      return { name, task, summary, exitCode: result.exitCode, elapsed, ...(sessionId ? { claudeSessionId: sessionId } : {}) };
+      return {
+        name,
+        task,
+        summary,
+        exitCode: result.exitCode,
+        elapsed,
+        ...(sessionId ? { claudeSessionId: sessionId } : {}),
+        ...(stopped ? { stopped: true, error: "stopped" } : {}),
+      };
     }
 
     // Pi subagent result extraction
-    let summary: string;
-    if (existsSync(sessionFile)) {
-      const allEntries = getNewEntries(sessionFile, 0);
-      summary =
-        findLastAssistantMessage(allEntries) ??
-        (result.errorMessage
+    const lastAssistantMessage = existsSync(sessionFile)
+      ? findLastAssistantMessage(getNewEntries(sessionFile, 0))
+      : null;
+    const summary =
+      lastAssistantMessage ??
+      (stopped
+        ? "Sub-agent was stopped before it wrote a summary."
+        : result.errorMessage
           ? `Subagent error: ${result.errorMessage}`
           : result.exitCode !== 0
             ? `Sub-agent exited with code ${result.exitCode}`
             : "Sub-agent exited without output");
-    } else {
-      summary = result.errorMessage
-        ? `Subagent error: ${result.errorMessage}`
-        : result.exitCode !== 0
-          ? `Sub-agent exited with code ${result.exitCode}`
-          : "Sub-agent exited without output";
-    }
 
-    closeSurface(surface);
+    if (paneOpen) closeSurface(surface);
     runningSubagents.delete(running.id);
+
+    if (stopped) {
+      return { name, task, summary, sessionFile, exitCode: result.exitCode, elapsed, stopped: true, error: "stopped" };
+    }
 
     return {
       name,
@@ -1339,7 +1420,7 @@ async function watchSubagent(
     };
   } catch (err: any) {
     try {
-      closeSurface(surface);
+      if (running.closedByStop !== true) closeSurface(surface);
     } catch {}
     runningSubagents.delete(running.id);
 
@@ -1362,6 +1443,13 @@ async function watchSubagent(
       elapsed: Math.floor((Date.now() - startTime) / 1000),
       error: err?.message ?? String(err),
     };
+  } finally {
+    if (running.stopRequested) {
+      // A pane closed by subagent_stop can leave the child's sidecars behind;
+      // a later subagent_resume of this session must not see them.
+      rmSync(`${sessionFile}.stop`, { force: true });
+      rmSync(`${sessionFile}.exit`, { force: true });
+    }
   }
 }
 
@@ -1509,6 +1597,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
                   elapsed: result.elapsed,
                   sessionFile: result.sessionFile,
                   ...(result.errorMessage ? { errorMessage: result.errorMessage } : {}),
+                  ...(result.stopped ? { stopped: true, error: "stopped" } : {}),
                   ...(result.claudeSessionId ? { claudeSessionId: result.claudeSessionId } : {}),
                 },
               },
@@ -1616,11 +1705,13 @@ export default function subagentsExtension(pi: ExtensionAPI) {
       description:
         "Send Escape to the active turn of a currently running Pi-backed subagent. " +
         "The child pane, session, watcher, and running entry remain alive; this returns only a local acknowledgement " +
-        "and does not emit a subagent_result solely because of this request.",
+        "and does not emit a subagent_result solely because of this request. " +
+        "To end a subagent, use subagent_stop.",
       promptSnippet:
         "Send Escape to the active turn of a currently running Pi-backed subagent. " +
         "The child pane, session, watcher, and running entry remain alive; this returns only a local acknowledgement " +
-        "and does not emit a subagent_result solely because of this request.",
+        "and does not emit a subagent_result solely because of this request. " +
+        "To end a subagent, use subagent_stop.",
       parameters: Type.Object({
         id: Type.Optional(Type.String({ description: "Exact running subagent id" })),
         name: Type.Optional(Type.String({ description: "Exact running subagent display name" })),
@@ -1650,6 +1741,61 @@ export default function subagentsExtension(pi: ExtensionAPI) {
               " " +
               theme.fg("toolTitle", theme.bold(details.name ?? details.id ?? "subagent")) +
               theme.fg("dim", " — interrupt requested"),
+            0,
+            0,
+          );
+        }
+
+        const text = typeof result.content[0]?.text === "string" ? result.content[0].text : "";
+        return new Text(theme.fg("dim", text), 0, 0);
+      },
+    });
+
+  // ── subagent_stop tool ──
+  if (shouldRegister("subagent_stop"))
+    pi.registerTool({
+      name: "subagent_stop",
+      label: "Stop Subagent",
+      description:
+        "End a currently running subagent (Pi- or Claude-backed) and close its pane. " +
+        "Pi-backed subagents get Escape plus a stop marker and shut down at the end of the turn; " +
+        "if the subagent has not exited after a few seconds, its pane is closed. " +
+        "Returns an acknowledgement immediately. The harness then delivers a subagent_result marked \"stopped\" " +
+        "with the last assistant message as the summary — do not poll for it. " +
+        "To cancel only the current turn and keep the subagent running, use subagent_interrupt.",
+      promptSnippet:
+        "End a currently running subagent (Pi- or Claude-backed) and close its pane. " +
+        "Returns an acknowledgement immediately; the harness delivers a subagent_result marked \"stopped\". " +
+        "To cancel only the current turn and keep the subagent running, use subagent_interrupt.",
+      parameters: Type.Object({
+        id: Type.Optional(Type.String({ description: "Exact running subagent id" })),
+        name: Type.Optional(Type.String({ description: "Exact running subagent display name" })),
+      }),
+
+      async execute(_toolCallId, params) {
+        return handleSubagentStop(params);
+      },
+
+      renderCall(args, theme) {
+        const target = args.id ? `${args.id}` : args.name ?? "(unknown)";
+        return new Text(
+          theme.fg("accent", "▸") +
+            " " +
+            theme.fg("toolTitle", theme.bold(target)) +
+            theme.fg("dim", " — stop"),
+          0,
+          0,
+        );
+      },
+
+      renderResult(result, _opts, theme) {
+        const details = result.details as any;
+        if (details?.status === "stop_requested") {
+          return new Text(
+            theme.fg("accent", "▸") +
+              " " +
+              theme.fg("toolTitle", theme.bold(details.name ?? details.id ?? "subagent")) +
+              theme.fg("dim", " — stop requested"),
             0,
             0,
           );
@@ -1933,7 +2079,9 @@ export default function subagentsExtension(pi: ExtensionAPI) {
 
             const allEntries = getNewEntries(params.sessionPath, entryCountBefore);
             const summary = findLastAssistantMessage(allEntries) ??
-              (result.errorMessage
+              (result.stopped
+                ? "Resumed session was stopped before it wrote a summary."
+                : result.errorMessage
                 ? `Subagent error: ${result.errorMessage}`
                 : result.exitCode !== 0
                   ? `Resumed session exited with code ${result.exitCode}`
@@ -1955,6 +2103,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
                   elapsed: result.elapsed,
                   sessionFile: params.sessionPath,
                   ...(result.errorMessage ? { errorMessage: result.errorMessage } : {}),
+                  ...(result.stopped ? { stopped: true, error: "stopped" } : {}),
                 },
               },
               { triggerTurn: true, deliverAs: "steer" },
@@ -2038,15 +2187,20 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         const name = details.name ?? "subagent";
         const exitCode = details.exitCode ?? 0;
         const errorMessage = typeof details.errorMessage === "string" ? details.errorMessage : "";
-        const failed = exitCode !== 0 || !!errorMessage;
+        const stopped = details.stopped === true;
+        const failed = !stopped && (exitCode !== 0 || !!errorMessage);
         const elapsed = details.elapsed != null ? formatElapsed(details.elapsed) : "?";
         const bgFn = failed
           ? (text: string) => theme.bg("toolErrorBg", text)
           : (text: string) => theme.bg("toolSuccessBg", text);
-        const icon = failed
-          ? theme.fg("error", "✗")
-          : theme.fg("success", "✓");
-        const status = errorMessage
+        const icon = stopped
+          ? theme.fg("warning", "■")
+          : failed
+            ? theme.fg("error", "✗")
+            : theme.fg("success", "✓");
+        const status = stopped
+          ? "stopped"
+          : errorMessage
           ? "failed (provider/agent error)"
           : failed
             ? `failed (exit ${exitCode})`
@@ -2060,6 +2214,7 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         const summary = rawContent
           .replace(/\n\nSession: .+\nResume: .+$/, "")
           .replace(`Sub-agent "${name}" completed (${elapsed}).\n\n`, "")
+          .replace(`Sub-agent "${name}" stopped (${elapsed}).\n\n`, "")
           .replace(`Sub-agent "${name}" failed (exit code ${exitCode}).\n\n`, "")
           .replace(
             new RegExp(

@@ -1,6 +1,6 @@
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -1398,6 +1398,10 @@ describe("cmux.ts interpretExitSidecar", () => {
     assert.match(result.errorMessage ?? "", /no errorMessage/);
   });
 
+  it("decodes stopped payloads", () => {
+    assert.deepEqual(interpretExitSidecar({ type: "stopped" }), { reason: "stopped", exitCode: 0 });
+  });
+
   it("treats unknown payload shapes as done", () => {
     assert.deepEqual(interpretExitSidecar({}), { reason: "done", exitCode: 0 });
     assert.deepEqual(interpretExitSidecar(null), { reason: "done", exitCode: 0 });
@@ -1441,6 +1445,7 @@ describe("tool registration", () => {
 
     assert.equal(denied.has("subagent"), true);
     assert.equal(denied.has("subagent_interrupt"), true);
+    assert.equal(denied.has("subagent_stop"), true);
     assert.equal(denied.has("subagent_resume"), true);
   });
 
@@ -1671,6 +1676,7 @@ describe("subagent interruption", () => {
     (subagentsModule as any).default(api);
 
     assert.equal(registeredTools.some((tool) => tool.name === "subagent_interrupt"), true);
+    assert.equal(registeredTools.some((tool) => tool.name === "subagent_stop"), true);
   });
 
   it("resolves interrupt targets by exact id and reports name ambiguity", () => {
@@ -1905,6 +1911,94 @@ describe("subagent interruption", () => {
       });
     } finally {
       runningMap.clear();
+    }
+  });
+
+  it("stops a Pi-backed subagent: writes the marker, sends Escape, closes the pane after the grace period", async () => {
+    const testApi = (subagentsModule as any).__test__;
+    const runningMap = testApi.runningSubagents as Map<string, any>;
+    runningMap.clear();
+    const dir = createTestDir();
+    const sessionFile = join(dir, "worker.jsonl");
+    const escapedSurfaces: string[] = [];
+    const closedSurfaces: string[] = [];
+
+    try {
+      runningMap.set("a1", makeRunning({ sessionFile }));
+
+      const result = testApi.handleSubagentStop({ name: "Worker" }, {
+        sendEscapeKey: (surface: string) => escapedSurfaces.push(surface),
+        closePane: (surface: string) => closedSurfaces.push(surface),
+        graceMs: 10,
+      });
+
+      assert.deepEqual(result.details, { id: "a1", name: "Worker", status: "stop_requested" });
+      assert.equal(existsSync(`${sessionFile}.stop`), true);
+      assert.deepEqual(escapedSurfaces, ["pane-1"]);
+      assert.equal(runningMap.get("a1").stopRequested, true);
+      assert.deepEqual(closedSurfaces, []);
+
+      await new Promise((resolve) => setTimeout(resolve, 30));
+
+      assert.deepEqual(closedSurfaces, ["pane-1"]);
+      assert.equal(runningMap.get("a1").closedByStop, true);
+    } finally {
+      runningMap.clear();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not close the pane when the child exits within the grace period", async () => {
+    const testApi = (subagentsModule as any).__test__;
+    const runningMap = testApi.runningSubagents as Map<string, any>;
+    runningMap.clear();
+    const closedSurfaces: string[] = [];
+
+    try {
+      runningMap.set("a1", makeRunning({ cli: "claude" }));
+
+      testApi.handleSubagentStop({ name: "Worker" }, {
+        sendEscapeKey: () => assert.fail("Claude-backed subagents get no Escape"),
+        closePane: (surface: string) => closedSurfaces.push(surface),
+        graceMs: 10,
+      });
+      runningMap.delete("a1");
+
+      await new Promise((resolve) => setTimeout(resolve, 30));
+
+      assert.deepEqual(closedSurfaces, []);
+    } finally {
+      runningMap.clear();
+    }
+  });
+
+  it("reports a subagent whose pane subagent_stop closed as stopped, with its last message", async () => {
+    const testApi = (subagentsModule as any).__test__;
+    const runningMap = testApi.runningSubagents as Map<string, any>;
+    runningMap.clear();
+    const dir = createTestDir();
+
+    try {
+      const sessionFile = createSessionFile(dir, [SESSION_HEADER, USER_MSG, ASSISTANT_MSG]);
+      writeFileSync(`${sessionFile}.stop`, "");
+      const running = makeRunning({ sessionFile, stopRequested: true, closedByStop: true });
+      runningMap.set("a1", running);
+
+      const result = await testApi.watchSubagent(running, new AbortController().signal);
+
+      assert.equal(result.stopped, true);
+      assert.equal(result.error, "stopped");
+      assert.equal(result.summary, "Here is my plan...");
+      assert.equal(runningMap.has("a1"), false);
+      assert.equal(existsSync(`${sessionFile}.stop`), false);
+
+      const presentation = testApi.resolveResultPresentation(result, "Worker");
+      assert.match(presentation, /^Sub-agent "Worker" stopped \(/);
+      assert.match(presentation, /Here is my plan\.\.\./);
+      assert.doesNotMatch(presentation, /failed|exited with code/);
+    } finally {
+      runningMap.clear();
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 

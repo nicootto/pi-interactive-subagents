@@ -81,12 +81,13 @@ Subagent panes are created without stealing keyboard focus (cmux, tmux). Launch 
 
 ### Extensions
 
-**Subagents** — 4 main-session tools + 3 commands, plus 1 subagent-only tool:
+**Subagents** — 5 main-session tools + 3 commands, plus 1 subagent-only tool:
 
 | Tool                 | Description                                                                                 |
 | -------------------- | ------------------------------------------------------------------------------------------- |
 | `subagent`           | Spawn a sub-agent in a dedicated multiplexer pane (async — returns immediately)             |
 | `subagent_interrupt` | Interrupt a running Pi-backed subagent's current turn                                       |
+| `subagent_stop`      | End a running subagent and close its pane (async — result arrives as `stopped`)             |
 | `subagents_list`     | List available agent definitions                                                            |
 | `subagent_resume`    | Resume a previous sub-agent session (async)                                                 |
 
@@ -211,9 +212,29 @@ subagent_interrupt({ name: "Scout" });
 
 This sends Escape to the child pane, cancelling the in-progress model turn. The subagent session stays alive — the pane, session file, and background polling all remain intact. After the interrupt, the widget immediately moves the child back to `waiting`, and stale pre-interrupt snapshots are ignored. If the child starts work later, newer snapshots return it to `active`; completion, failure, and `caller_ping` still flow through normally.
 
-This is a turn-level interrupt, not a method for forcibly terminating a subagent session.
+This is a turn-level interrupt. To end a subagent, use `subagent_stop`.
 
 > **Note:** Only Pi-backed subagents are supported. Claude-backed runs will return an error.
+
+---
+
+## Stopping a subagent
+
+Use `subagent_stop` to end a running subagent and close its pane. It works for Pi-backed and Claude-backed subagents:
+
+```typescript
+subagent_stop({ id: "abcd1234" });
+// or
+subagent_stop({ name: "Scout" });
+```
+
+The tool returns an acknowledgement right away. Then:
+
+1. For a Pi-backed subagent, the parent writes a `<session>.jsonl.stop` marker and sends Escape. When the turn ends, the child sees the marker and shuts down. This happens whatever `auto-exit` is and however the turn ended.
+2. If the subagent has not exited after 5 seconds, the parent closes its pane. This covers idle children, which ignore Escape, and Claude-backed children.
+3. The harness delivers a `subagent_result` that says the subagent `stopped`. The summary is the last assistant message when there is one, and the details carry `stopped: true` and `error: "stopped"`.
+
+The session file stays on disk, so you can continue the work later with `subagent_resume`.
 
 ---
 
@@ -405,7 +426,7 @@ By default, every sub-agent can spawn further sub-agents. Control this with fron
 
 ### `spawning: false`
 
-Denies all subagent lifecycle tools (`subagent`, `subagent_interrupt`, `subagents_list`, `subagent_resume`):
+Denies all subagent lifecycle tools (`subagent`, `subagent_interrupt`, `subagent_stop`, `subagents_list`, `subagent_resume`):
 
 ```yaml
 ---
