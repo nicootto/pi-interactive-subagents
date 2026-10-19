@@ -51,10 +51,6 @@ function resultId(output: string, resource: string, field: string): string {
   return value;
 }
 
-export function createHerdrSurface(name: string): string {
-  return splitHerdrSurface(name, "right");
-}
-
 export function splitHerdrSurface(
   name: string,
   direction: "left" | "right" | "up" | "down",
@@ -81,12 +77,6 @@ export interface HerdrPlacement {
 interface HerdrTarget {
   workspaceId: string;
   paneId?: string;
-}
-
-function callerWorkspaceId(): string {
-  const surface = process.env.HERDR_PANE_ID;
-  if (!surface) throw new Error("HERDR_PANE_ID not set");
-  return resultId(herdrCommand(["pane", "get", surface]), "pane", "workspace_id");
 }
 
 function findOrCreateWorkspace(label: string, tabLabel: string): HerdrTarget {
@@ -116,9 +106,7 @@ function paneInTab(workspaceId: string, tabLabel: string): string | undefined {
  */
 export function createPlacedHerdrSurface(name: string, placement: HerdrPlacement): string {
   const tabLabel = placement.tab ?? name;
-  const target = placement.workspace
-    ? findOrCreateWorkspace(placement.workspace, tabLabel)
-    : { workspaceId: callerWorkspaceId() };
+  const target = findOrCreateWorkspace(placement.workspace ?? "subagents", tabLabel);
   if (target.paneId) {
     herdrCommand(["pane", "rename", target.paneId, name]);
     return target.paneId;

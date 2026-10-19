@@ -56,8 +56,9 @@ Optional: set `PI_SUBAGENT_MUX=cmux|tmux|zellij|wezterm|herdr` to force a specif
 Run `pi` inside a Herdr pane. The extension detects `HERDR_ENV=1` and `HERDR_PANE_ID` before other multiplexers.
 Use `PI_SUBAGENT_MUX=herdr` to force Herdr; the extension refuses Herdr control outside a managed pane.
 
-Each subagent opens in a right-hand split beside the caller's pane, in the same tab and workspace, without focus.
-Pass `workspace` and `tab` labels to `subagent` or `subagent_resume` to place it elsewhere: missing workspaces and tabs are created without focus, and an existing tab gets a right split.
+Each subagent opens without focus in its own tab, labeled with the subagent name, in a `subagents` workspace.
+Pass `workspace` and `tab` labels to `subagent` or `subagent_resume` to place it elsewhere.
+Missing workspaces and tabs are created without focus, and an existing tab gets a right split.
 Commands and Escape target explicit pane IDs.
 Explicit background splits support `right` and `down`.
 Subagent panes close when the agent session exits, and results return to the parent.

@@ -69,9 +69,13 @@ it("splits the caller pane without focus and uses explicit IDs for the complete 
 
   const commands = readFileSync(commandLog, "utf8").trim().split("\n").map((line) => JSON.parse(line));
   assert.deepEqual(commands, [
-    ["pane", "split", "--pane", "w-parent:p-parent", "--direction", "right", "--cwd", process.cwd(), "--no-focus"],
+    ["workspace", "list"],
+    ["workspace", "create", "--cwd", process.cwd(), "--label", "subagents", "--no-focus"],
+    ["tab", "rename", "w-test:t-child", name],
     ["pane", "rename", first, name],
-    ["pane", "split", "--pane", "w-parent:p-parent", "--direction", "right", "--cwd", process.cwd(), "--no-focus"],
+    ["workspace", "list"],
+    ["workspace", "create", "--cwd", process.cwd(), "--label", "subagents", "--no-focus"],
+    ["tab", "rename", "w-test:t-child", "Second"],
     ["pane", "rename", second, "Second"],
     ["pane", "run", first, "printf '%s' 'hello world'"],
     ["pane", "send-keys", first, "esc"],

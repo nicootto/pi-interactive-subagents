@@ -5,7 +5,6 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 
 import {
-  createHerdrSurface,
   createPlacedHerdrSurface,
   type HerdrPlacement,
   herdrCommand,
@@ -775,12 +774,10 @@ function createCmuxSplitSurface(
 export function createSurface(name: string, placement?: HerdrPlacement): string {
   const backend = getMuxBackend();
 
+  if (backend === "herdr") return createPlacedHerdrSurface(name, placement ?? {});
   if (placement?.workspace || placement?.tab) {
-    if (backend !== "herdr") throw new Error("Workspace and tab placement require the Herdr backend.");
-    return createPlacedHerdrSurface(name, placement);
+    throw new Error("Workspace and tab placement require the Herdr backend.");
   }
-
-  if (backend === "herdr") return createHerdrSurface(name);
 
   if (backend === "cmux" && cmuxSubagentPane) {
     // Verify the pane still exists before adding a tab to it

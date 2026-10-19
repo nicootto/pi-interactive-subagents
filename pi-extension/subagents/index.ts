@@ -113,13 +113,13 @@ const SubagentParams = Type.Object({
   workspace: Type.Optional(
     Type.String({
       description:
-        "Herdr only: label of the workspace that hosts the subagent. Created without focus when missing. Defaults to the caller's workspace.",
+        "Herdr only: label of the workspace that hosts the subagent. Created without focus when missing. Defaults to \"subagents\".",
     }),
   ),
   tab: Type.Optional(
     Type.String({
       description:
-        "Herdr only: label of the tab that hosts the subagent. Created when missing; an existing tab gets a right split. Defaults to the subagent name when workspace is set.",
+        "Herdr only: label of the tab that hosts the subagent. Created when missing; an existing tab gets a right split. Defaults to the subagent name.",
     }),
   ),
   fork: Type.Optional(
@@ -1894,13 +1894,13 @@ export default function subagentsExtension(pi: ExtensionAPI) {
         workspace: Type.Optional(
           Type.String({
             description:
-              "Herdr only: label of the workspace that hosts the resumed session. Created without focus when missing.",
+              "Herdr only: label of the workspace that hosts the resumed session. Created without focus when missing. Defaults to \"subagents\".",
           }),
         ),
         tab: Type.Optional(
           Type.String({
             description:
-              "Herdr only: label of the tab that hosts the resumed session. Created when missing; an existing tab gets a right split.",
+              "Herdr only: label of the tab that hosts the resumed session. Created when missing; an existing tab gets a right split. Defaults to the session name.",
           }),
         ),
       }),
