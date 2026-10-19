@@ -161,7 +161,7 @@ interface AgentDefaults {
   disableModelInvocation?: boolean;
 }
 
-type AgentSource = "package" | "global" | "project";
+type AgentSource = "global" | "project";
 
 interface AgentDefinition extends AgentDefaults {
   name: string;
@@ -212,10 +212,6 @@ function resolveDenyTools(agentDefs: AgentDefaults | null): Set<string> {
 /** Resolve the global agent config directory, respecting PI_CODING_AGENT_DIR. */
 function getAgentConfigDir(): string {
   return process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent");
-}
-
-function getBundledAgentsDir(): string {
-  return join(SUBAGENTS_DIR, "../../agents");
 }
 
 function getFrontmatterValue(frontmatter: string, key: string): string | undefined {
@@ -271,7 +267,6 @@ function parseAgentDefinition(content: string, fallbackName: string): AgentDefin
 function discoverAgentDefinitions(): ListedAgentDefinition[] {
   const agents = new Map<string, ListedAgentDefinition>();
   const dirs: Array<{ path: string; source: AgentSource }> = [
-    { path: getBundledAgentsDir(), source: "package" },
     { path: join(getAgentConfigDir(), "agents"), source: "global" },
     { path: join(process.cwd(), ".pi", "agents"), source: "project" },
   ];
@@ -367,7 +362,6 @@ function loadAgentDefaults(agentName: string): AgentDefaults | null {
   const paths = [
     join(process.cwd(), ".pi", "agents", `${agentName}.md`),
     join(configDir, "agents", `${agentName}.md`),
-    join(getBundledAgentsDir(), `${agentName}.md`),
   ];
 
   for (const p of paths) {

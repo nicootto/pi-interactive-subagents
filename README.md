@@ -97,17 +97,9 @@ Subagent panes are created without stealing keyboard focus (cmux, tmux). Launch 
 | `/iterate`                 | Fork into a subagent for quick fixes |
 | `/subagent <agent> <task>` | Spawn a named agent directly         |
 
-### Bundled Agents
+### Agents
 
-| Agent             | Model                  | Role                                                                                     |
-| ----------------- | ---------------------- | ---------------------------------------------------------------------------------------- |
-| **planner**       | GPT-6 Astra (medium thinking) | Brainstorming — clarifies requirements, explores approaches, writes plans, creates todos |
-| **scout**         | GPT-5.6 Luna (max thinking) | Fast codebase reconnaissance — maps files, patterns, conventions                         |
-| **worker**        | GPT-5.6 Sol (xhigh thinking) | Implements tasks from todos — writes code, runs tests, makes polished commits            |
-| **reviewer**      | Opus (medium thinking) | Reviews code for bugs, security issues, correctness                                      |
-| **visual-tester** | GPT-5.6 Sol (xhigh thinking) | Visual QA via Chrome CDP — screenshots, responsive testing, interaction testing          |
-
-Agent discovery follows priority: **project-local** (`.pi/agents/`) > **global** (`~/.pi/agent/agents/`) > **package-bundled**. Override any bundled agent by placing your own version in the higher-priority location.
+The package ships no agents. Agent discovery follows priority: **project-local** (`.pi/agents/`) > **global** (`~/.pi/agent/agents/`).
 
 ---
 
@@ -349,7 +341,7 @@ You are a specialized agent that does X...
 
 ---
 
-Discovery still resolves precedence before visibility filtering. If a project-local hidden agent has the same name as a visible global or bundled agent, the hidden project agent wins and the lower-precedence agent does not appear in `subagents_list`.
+Discovery still resolves precedence before visibility filtering. If a project-local hidden agent has the same name as a visible global agent, the hidden project agent wins and the lower-precedence agent does not appear in `subagents_list`.
 
 ### `session-mode`
 
